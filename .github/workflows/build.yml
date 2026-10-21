@@ -1,11 +1,12 @@
-
-name: CoreProtect AutoBuild
+name: Build Latest CoreProtect
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "17 */6 * * *"
   push:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -16,14 +17,15 @@ concurrency:
 
 jobs:
   build:
-    name: Build latest CoreProtect
+    name: Build latest development source
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout my repository
+      - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Check upstream for a new commit
+      - name: Check for a new upstream commit
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,17 +40,16 @@ jobs:
           SHORT_SHA="${SHA:0:7}"
           TAG="build-${SHA}"
 
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-          if gh release view "$TAG" \
-            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Ce commit a déjà été compilé."
+            echo "This upstream commit has already been built."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Nouveau commit détecté : $SHA"
+            echo "New upstream commit found: ${SHA}"
           fi
 
       - name: Set up Java 25
@@ -60,37 +61,54 @@ jobs:
           cache: maven
           cache-dependency-path: upstream/pom.xml
 
-      - name: Compile CoreProtect
+      - name: Build CoreProtect
         if: steps.check.outputs.changed == 'true'
         working-directory: upstream
         run: mvn -B -Dproject.branch=development verify
 
-
-      - name: Prepare JAR
+      - name: Prepare release JAR
         if: steps.check.outputs.changed == 'true'
         id: jar
         shell: bash
         run: |
           set -euo pipefail
 
-          JAR=$(find upstream/target \
-            -maxdepth 1 \
-            -type f \
-            -name '*.jar' \
-            ! -name '*original*' \
-            ! -name '*sources*' \
-            ! -name '*javadoc*' \
-            | head -n 1)
+          mapfile -t JARS < <(
+            find upstream/target -maxdepth 1 -type f \
+              -name 'CoreProtect-*.jar' \
+              ! -name '*-sources.jar' \
+              ! -name '*-javadoc.jar' \
+              ! -name '*-original.jar' \
+              ! -name '*-shaded.jar' \
+              | sort
+          )
 
-          if [ -z "$JAR" ]; then
-            echo "ERREUR : aucun JAR trouvé."
+          if [ "${#JARS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one CoreProtect application JAR, found ${#JARS[@]}."
+            printf '%s\n' "${JARS[@]}"
             exit 1
           fi
 
           mkdir -p dist
-          cp "$JAR" dist/CoreProtect-latest.jar
-          echo "path=dist/CoreProtect-latest.jar" >> "$GITHUB_OUTPUT"
+          cp "${JARS[0]}" dist/CoreProtect-Development.jar
+          echo "path=dist/CoreProtect-Development.jar" >> "$GITHUB_OUTPUT"
 
+      - name: Write release notes
+        if: steps.check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Automated development build of the public CoreProtect source.
+
+          - **Source repository:** https://github.com/PlayPro/CoreProtect
+          - **Source branch:** master
+          - **Source commit:** ${{ steps.check.outputs.sha }}
+          - **Build environment:** Java 25 and Maven
+          - **Build profile:** development
+
+          This is an unofficial community build, not an official stable release.
+          Back up your server and database, and test this build before production use.
+          NOTES
 
       - name: Publish GitHub Release
         if: steps.check.outputs.changed == 'true'
@@ -104,14 +122,6 @@ jobs:
             "${{ steps.jar.outputs.path }}" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "CoreProtect build ${{ steps.check.outputs.short_sha }}" \
-            --notes "Automated Community Edition build.
-
-          Upstream repository: PlayPro/CoreProtect
-          Upstream commit: ${{ steps.check.outputs.sha }}
-          Branch: master
-          Build Java: 25
-          Maven branch: development
-
-          Built automatically from the public source code.
-          Test on a backup server before production use."
+            --title "CoreProtect Development Build (${{ steps.check.outputs.short_sha }})" \
+            --notes-file release-notes.md \
+            --latest
