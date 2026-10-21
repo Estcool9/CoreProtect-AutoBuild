@@ -1,0 +1,117 @@
+
+name: CoreProtect AutoBuild
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coreprotect-autobuild
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build latest CoreProtect
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout my repository
+        uses: actions/checkout@v7
+
+      - name: Check upstream for a new commit
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 --branch master \
+            https://github.com/PlayPro/CoreProtect.git upstream
+
+          SHA=$(git -C upstream rev-parse HEAD)
+          SHORT_SHA="${SHA:0:7}"
+          TAG="build-${SHA}"
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Ce commit a déjà été compilé."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Nouveau commit détecté : $SHA"
+          fi
+
+      - name: Set up Java 25
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: upstream/pom.xml
+
+      - name: Compile CoreProtect
+        if: steps.check.outputs.changed == 'true'
+        working-directory: upstream
+        run: mvn -B -Dproject.branch=development verify
+
+
+      - name: Prepare JAR
+        if: steps.check.outputs.changed == 'true'
+        id: jar
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR=$(find upstream/target \
+            -maxdepth 1 \
+            -type f \
+            -name '*.jar' \
+            ! -name '*original*' \
+            ! -name '*sources*' \
+            ! -name '*javadoc*' \
+            | head -n 1)
+
+          if [ -z "$JAR" ]; then
+            echo "ERREUR : aucun JAR trouvé."
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$JAR" dist/CoreProtect-latest.jar
+          echo "path=dist/CoreProtect-latest.jar" >> "$GITHUB_OUTPUT"
+
+
+      - name: Publish GitHub Release
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release create "${{ steps.check.outputs.tag }}" \
+            "${{ steps.jar.outputs.path }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CoreProtect build ${{ steps.check.outputs.short_sha }}" \
+            --notes "Automated Community Edition build.
+
+          Upstream repository: PlayPro/CoreProtect
+          Upstream commit: ${{ steps.check.outputs.sha }}
+          Branch: master
+          Build Java: 25
+          Maven branch: development
+
+          Built automatically from the public source code.
+          Test on a backup server before production use."
