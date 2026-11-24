@@ -6,6 +6,10 @@ Automatically build the latest public development source of [CoreProtect](https:
 
 > This is an unofficial community build. It is not an official CoreProtect release.
 
+## Project author
+
+This automation project is maintained by [Esteban Bueno](https://est1.dev/), who documents it alongside his other web development, systems and engineering projects.
+
 ## How to install
 
 1. Open the [latest release](https://github.com/Estcool9/CoreProtect-AutoBuild/releases/latest).
